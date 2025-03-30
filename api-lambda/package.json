@@ -12,11 +12,11 @@
   "license": "ISC",
   "type": "module",
   "dependencies": {
-    "@aws-sdk/client-dynamodb": "^3.xxx.x",
-    "@aws-sdk/client-sfn": "^3.xxx.x",
-    "@aws-sdk/lib-dynamodb": "^3.xxx.x"
+    "@aws-sdk/client-dynamodb": "^3.777.0",
+    "@aws-sdk/client-sfn": "^3.777.0",
+    "@aws-sdk/lib-dynamodb": "^3.778.0"
   },
   "devDependencies": {
-    "esbuild": "^0.x.x"
+    "esbuild": "^0.25.1"
   }
 }
