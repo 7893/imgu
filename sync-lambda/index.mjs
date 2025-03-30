@@ -1,123 +1,167 @@
-// index.mjs
-// testing github actions workflow
+// /home/admin/imgu/sync-lambda/index.mjs (Refactored for Step Functions)
 import config from './config.mjs';
-import { fetchPhotos } from './unsplash.mjs';
+import { fetchUnsplashPage } from './unsplash.mjs'; // 假设 unsplash.mjs 已有此函数或需创建
 import { uploadImage } from './r2.mjs';
-import { saveMetadata } from './dynamodb.mjs';
+import { getDynamoDBItem, saveMetadata } from './dynamodb.mjs'; // 假设 dynamodb.mjs 添加了 getItem 功能
 
 /**
- * AWS Lambda Handler Function
+ * 根据事件中的 action 路由到不同的处理器
  */
 export const handler = async (event) => {
-  console.log('Starting Unsplash sync process...');
-  const startTime = Date.now();
-  let processedCount = 0;
-  let errorCount = 0;
+  console.log('Sync Lambda invoked with event:', JSON.stringify(event, null, 2));
+
+  // action 指明了 Step Functions 希望执行哪个任务
+  const action = event.action;
+  const payload = event.payload || {};
 
   try {
-    // 1. 从 Unsplash 获取照片数据
-    const photos = await fetchPhotos();
-
-    if (!Array.isArray(photos) || photos.length === 0) {
-      console.log('No photos fetched from Unsplash.');
-      return {
-        statusCode: 200,
-        body: JSON.stringify({ message: 'No photos fetched, sync finished.' }),
-      };
-    }
-
-    // 2. 循环处理每张照片
-    for (const photoData of photos) {
-      const photoId = photoData.id;
-      console.log(`\nProcessing photo ID: ${photoId}`);
-
-      try {
-        // 确定类别 (使用第一个 topic 的 slug，或默认值)
-        const category = photoData.topics?.[0]?.slug || config.defaultCategory;
-        console.log(`Determined category: ${category}`);
-
-        // 构建 R2 对象键和文件名
-        const imageFileName = `${photoId}.jpg`; // 假设都保存为 jpg
-        const r2ObjectKey = `${category}/${imageFileName}`;
-        const r2PublicUrl = `${config.r2PublicUrlPrefix}/${r2ObjectKey}`;
-
-        // 检查图片是否已存在于 DynamoDB (可选，避免重复处理 - 这里简化，先不检查)
-        // TODO: Optionally add DynamoDB check here using photoId
-
-        // 3. 下载图片内容 (选择合适的尺寸, e.g., regular)
-        const imageUrl = photoData.urls?.regular;
-        if (!imageUrl) {
-            console.warn(`Skipping photo ${photoId}: Missing regular URL.`);
-            errorCount++;
-            continue;
+    switch (action) {
+      case 'FETCH_UNSPLASH_PAGE':
+        // 输入: payload = { currentPage, batchSize }
+        // 输出: { photos: [...] } 或抛出错误
+        if (payload.currentPage === undefined || payload.batchSize === undefined) {
+            throw new Error('Missing currentPage or batchSize for FETCH_UNSPLASH_PAGE');
         }
-        console.log(`Downloading image from: ${imageUrl}`);
-        const imageResponse = await fetch(imageUrl);
-        if (!imageResponse.ok) {
-          console.warn(`Skipping photo ${photoId}: Failed to download image (${imageResponse.status})`);
-          errorCount++;
-          continue;
+        const photos = await handleFetchPage(payload.currentPage, payload.batchSize);
+        return { photos }; // 返回照片列表
+
+      case 'CHECK_PHOTO_EXISTS':
+        // 输入: payload = { photo_id }
+        // 输出: { exists: true/false } 或抛出错误
+        if (!payload.photo_id) {
+            throw new Error('Missing photo_id for CHECK_PHOTO_EXISTS');
         }
-        const imageBuffer = Buffer.from(await imageResponse.arrayBuffer());
-        const contentType = imageResponse.headers.get('content-type') || 'image/jpeg';
-        console.log(`Image downloaded. Size: ${Math.round(imageBuffer.length / 1024)} KB, Type: ${contentType}`);
+        const exists = await handleCheckExists(payload.photo_id);
+        return { exists };
 
-        // 4. 上传图片到 R2
-        await uploadImage(r2ObjectKey, imageBuffer, contentType);
+      case 'DOWNLOAD_AND_STORE':
+        // 输入: payload = { photoData } (完整的 Unsplash 照片对象)
+        // 输出: { success: true, photo_id: ..., r2_object_key: ... } 或抛出错误
+         if (!payload.photoData || !payload.photoData.id) {
+            throw new Error('Missing photoData for DOWNLOAD_AND_STORE');
+        }
+        const result = await handleDownloadAndStore(payload.photoData);
+        return { success: true, ...result };
 
-        // 5. 准备并保存元数据到 DynamoDB
-        // 包含所有 Unsplash 数据，并添加我们自己的字段
-        const metadataItem = {
-          ...photoData, // 展开所有从 Unsplash 获取的原始数据
-          photo_id: photoId, // 主键
-          r2_object_key: r2ObjectKey, // R2 中的路径
-          r2_public_url: r2PublicUrl, // R2 的公开 URL
-          sync_timestamp: new Date().toISOString(), // 同步时间戳
-          image_category: category // 保存确定的类别
-          // 注意: DynamoDB 不支持空字符串，需要处理，但 DocumentClient 会处理一些
-          // 如果 Unsplash 数据中有值为 null 或空字符串的字段，可能需要清理
-        };
-
-        // 移除不支持的空字符串值 (如果需要更严格的清理)
-        // for (const key in metadataItem) {
-        //   if (metadataItem[key] === '') {
-        //      delete metadataItem[key]; // 或者设置为 null，取决于你的需求
-        //   }
-        // }
-
-        await saveMetadata(metadataItem);
-
-        processedCount++;
-
-      } catch (photoError) {
-        console.error(`Failed to process photo ${photoId}:`, photoError);
-        errorCount++;
-        // 选择继续处理下一张照片
-      }
+      default:
+        console.error('Unknown action requested:', action);
+        throw new Error(`Unknown action: ${action}`);
     }
-
-    const duration = Date.now() - startTime;
-    console.log(`\nSync process finished in ${duration}ms.`);
-    console.log(`Successfully processed: ${processedCount}, Errors: ${errorCount}`);
-
-    return {
-      statusCode: 200,
-      body: JSON.stringify({
-          message: `Sync finished. Processed: ${processedCount}, Errors: ${errorCount}`,
-          duration_ms: duration
-      }),
-    };
-
   } catch (error) {
-    console.error('Critical error during sync process:', error);
-    const duration = Date.now() - startTime;
-    return {
-      statusCode: 500,
-      body: JSON.stringify({
-          message: 'Sync failed due to critical error.',
-          error: error.message,
-          duration_ms: duration
-      }),
-    };
+    console.error(`Error executing action ${action}:`, error);
+    // 让错误冒泡给 Step Functions 处理
+    throw error;
   }
 };
+
+// --- Action Handlers ---
+
+async function handleFetchPage(page, perPage) {
+  console.log(`Workspaceing Unsplash page ${page}, perPage=${perPage}, orderBy=oldest`);
+  // 注意: 需要确保 unsplash.mjs 中的 fetchPhotos 支持 page, per_page, order_by 参数
+  // 或者在这里直接调用 fetch API
+  const unsplashApiUrl = `${config.unsplashApiUrl}/photos?page=${page}&per_page=${perPage}&order_by=oldest`;
+  const response = await fetch(unsplashApiUrl, {
+      headers: {
+          'Authorization': `Client-ID ${config.unsplashAccessKey}`,
+          'Accept-Version': 'v1'
+      }
+  });
+  if (!response.ok) {
+      throw new Error(`Unsplash API Error (${response.status}) fetching page ${page}`);
+  }
+  const photos = await response.json();
+  console.log(`Workspaceed ${photos.length} photos for page ${page}.`);
+  return photos;
+}
+
+async function handleCheckExists(photoId) {
+  console.log(`Checking if photo ${photoId} exists in DynamoDB...`);
+  // 需要在 dynamodb.mjs 中实现 getDynamoDBItem 函数
+  const existingItem = await getDynamoDBItem(photoId);
+  const exists = !!existingItem; // 如果找到则为 true，否则为 false
+  console.log(`Photo ${photoId} exists: ${exists}`);
+  return exists;
+}
+
+async function handleDownloadAndStore(photoData) {
+  const photoId = photoData.id;
+  console.log(`Processing download & store for photo ID: ${photoId}`);
+
+  // 确定类别
+  const category = photoData.topics?.[0]?.slug || config.defaultCategory;
+
+  // 构建 R2 路径 (原始图，后缀可能不是 .jpg)
+  // 尝试从 URL 获取原始后缀，否则默认为 .jpg
+  const rawUrl = photoData.urls?.raw;
+  if (!rawUrl) {
+      throw new Error(`Missing raw URL for photo ${photoId}`);
+  }
+  let extension = '.jpg';
+  try {
+      const urlObj = new URL(rawUrl);
+      const fmMatch = urlObj.searchParams.get('fm');
+      if (fmMatch && ['jpg', 'png', 'gif', 'webp'].includes(fmMatch)) {
+          extension = `.${fmMatch}`;
+      }
+  } catch (e) { console.warn("Could not parse raw URL extension, defaulting to .jpg"); }
+
+  const imageFileName = `${photoId}${extension}`;
+  const r2ObjectKey = `${category}/${imageFileName}`;
+  const r2PublicUrl = `${config.r2PublicUrlPrefix}/${r2ObjectKey}`;
+
+  // 下载 RAW 图片
+  console.log(`Downloading RAW image from: ${rawUrl}`);
+  const imageResponse = await fetch(rawUrl);
+  if (!imageResponse.ok) {
+    throw new Error(`Failed to download RAW image ${photoId} (${imageResponse.status})`);
+  }
+  const imageBuffer = Buffer.from(await imageResponse.arrayBuffer());
+  const contentType = imageResponse.headers.get('content-type') || `image/${extension.substring(1)}`;
+  console.log(`RAW image downloaded. Size: ${Math.round(imageBuffer.length / 1024)} KB, Type: ${contentType}`);
+
+  // 上传到 R2
+  await uploadImage(r2ObjectKey, imageBuffer, contentType);
+
+  // 准备并保存元数据到 DynamoDB
+  const metadataItem = {
+    ...photoData, // 保存所有原始 Unsplash 数据
+    photo_id: photoId,
+    r2_object_key: r2ObjectKey,
+    r2_public_url: r2PublicUrl,
+    sync_timestamp: new Date().toISOString(),
+    image_category: category,
+    downloaded_size: 'raw' // 标记下载的是原始尺寸
+  };
+  await saveMetadata(metadataItem);
+
+  return { photo_id: photoId, r2_object_key: r2ObjectKey };
+}
+
+
+// --- 需要确保 dynamodb.mjs 也更新了 ---
+// 需要在 dynamodb.mjs 中添加一个类似 getDynamoDBItem 的函数:
+/*
+// dynamodb.mjs (添加部分)
+import { GetCommand } from "@aws-sdk/lib-dynamodb"; // 或者 @aws-sdk/client-dynamodb
+
+async function getDynamoDBItem(photoId) {
+  const getParams = {
+    TableName: config.dynamoDbTableName,
+    Key: {
+      photo_id: photoId,
+    },
+  };
+  try {
+    const command = new GetCommand(getParams);
+    const result = await ddbDocClient.send(command);
+    return result.Item; // 如果找到返回 Item 对象，否则返回 undefined
+  } catch (error) {
+    console.error(`Error getting item ${photoId} from DynamoDB:`, error);
+    throw error;
+  }
+}
+
+// 别忘了导出
+export { saveMetadata, getDynamoDBItem };
+*/

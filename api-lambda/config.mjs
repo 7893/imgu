@@ -1,29 +1,33 @@
-// config.mjs
+// /home/admin/imgu/api-lambda/config.mjs (Updated)
 import process from 'node:process';
 
-// 从环境变量读取配置
 const config = {
   dynamoDbTableName: process.env.DYNAMODB_TABLE_NAME,
-  // ALLOWED_ORIGIN 控制 CORS 响应头允许哪个来源访问
-  // 在 Lambda 环境变量中设置，例如 https://your-vercel-app.vercel.app
-  // 或者在测试时设置为 '*' (允许所有来源，不推荐用于生产)
-  allowedOrigin: process.env.ALLOWED_ORIGIN || '*', // 默认为 '*'，仅供测试
-  // AWS_REGION 由 Lambda 运行时自动提供: process.env.AWS_REGION
+  allowedOrigin: process.env.ALLOWED_ORIGIN || '*',
+  // 新增: 从环境变量读取 Step Functions State Machine 的 ARN
+  syncStateMachineArn: process.env.SYNC_STATE_MACHINE_ARN,
 };
 
-// 检查必需的环境变量
-const requiredEnvVars = ['DYNAMODB_TABLE_NAME', 'ALLOWED_ORIGIN'];
+const requiredEnvVars = ['DYNAMODB_TABLE_NAME', 'ALLOWED_ORIGIN', 'SYNC_STATE_MACHINE_ARN']; // 添加 ARN 检查
 const missingEnvVars = requiredEnvVars.filter(varName => !process.env[varName]);
 
 if (missingEnvVars.length > 0) {
-  // 注意：允许 ALLOWED_ORIGIN 为空，使用默认值 '*'，所以只在表名缺失时抛错
-   if (!config.dynamoDbTableName) {
-       const errorMessage = `Missing required environment variable: DYNAMODB_TABLE_NAME`;
+   // 如果允许 ALLOWED_ORIGIN 为 *，则只在其他缺失时报错
+   const criticalMissing = missingEnvVars.filter(v => v !== 'ALLOWED_ORIGIN' || process.env.ALLOWED_ORIGIN !== '*');
+   if(criticalMissing.length > 0) {
+       const errorMessage = `Missing required environment variables: ${criticalMissing.join(', ')}`;
        console.error(errorMessage);
        throw new Error(errorMessage);
-   } else {
-       console.warn(`Warning: ALLOWED_ORIGIN environment variable not set. Defaulting to '*' (allow all origins). This is not recommended for production.`);
+   } else if (!process.env.ALLOWED_ORIGIN) {
+        console.warn(`Warning: ALLOWED_ORIGIN not set, defaulting to '*'. Not recommended for production.`);
    }
 }
+// 单独检查 ARN 是否存在，因为它很关键
+if (!config.syncStateMachineArn) {
+    const errorMessage = `Missing required environment variable: SYNC_STATE_MACHINE_ARN`;
+    console.error(errorMessage);
+    throw new Error(errorMessage);
+}
+
 
 export default config;

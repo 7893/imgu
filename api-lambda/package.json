@@ -9,10 +9,10 @@
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "type": "commonjs",
+  "type": "module",
   "dependencies": {
     "@aws-sdk/client-dynamodb": "^3.777.0",
+    "@aws-sdk/client-sfn": "^3.777.0",
     "@aws-sdk/lib-dynamodb": "^3.778.0"
-  },
-  "type": "module"
+  }
 }
