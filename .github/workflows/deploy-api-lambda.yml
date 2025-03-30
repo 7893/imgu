@@ -1,3 +1,5 @@
+# .github/workflows/deploy-api-lambda.yml (Corrected comments in deploy step)
+
 name: Deploy API Lambda to AWS (OIDC) # 工作流名称
 
 on:
@@ -9,7 +11,7 @@ on:
       - 'api-lambda/**'
       - '.github/workflows/deploy-api-lambda.yml'
 
-  workflow_dispatch:
+  workflow_dispatch: # 允许手动触发
 
 jobs:
   deploy:
@@ -31,6 +33,7 @@ jobs:
       - name: Configure AWS Credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
+          # 使用 OIDC 扮演角色
           role-to-assume: arn:aws:iam::015590450538:role/My_LambdaImageProcessorRole_20250329 # <-- 要扮演的角色 ARN (请确认!)
           role-session-name: GitHubActionsApiLambdaDeploy-${{ github.run_id }}
           aws-region: us-west-2
@@ -47,8 +50,9 @@ jobs:
       - name: Deploy to AWS Lambda
         run: |
           echo "Deploying api-lambda function code..."
+          # --- 修正：确保反斜杠 \ 是行尾最后一个字符 ---
           aws lambda update-function-code \
             --function-name images_getImagesApi_20250329 \
-            --zip-file fileb://../api-lambda-deployment.zip \
+            --zip-file fileb://api-lambda-deployment.zip \
             --region us-west-2 \
             --publish

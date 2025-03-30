@@ -1,4 +1,4 @@
-# .github/workflows/deploy-sync-lambda.yml (Corrected zip path)
+# .github/workflows/deploy-sync-lambda.yml (Corrected comments in deploy step)
 
 name: Deploy Sync Lambda to AWS (OIDC) # 工作流名称
 
@@ -51,8 +51,9 @@ jobs:
       - name: Deploy to AWS Lambda
         run: |
           echo "Deploying sync-lambda function code..."
+          # --- 修正：确保反斜杠 \ 是行尾最后一个字符 ---
           aws lambda update-function-code \
             --function-name images_20250329 \
-            --zip-file fileb://sync-lambda-deployment.zip \ # <-- 修正后的路径 (去掉了../)
+            --zip-file fileb://sync-lambda-deployment.zip \
             --region us-west-2 \
-            --publish # 每次部署发布新版本
+            --publish
