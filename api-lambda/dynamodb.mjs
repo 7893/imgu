@@ -1,57 +1,42 @@
-// dynamodb.mjs (Corrected for API Lambda)
+// /home/admin/imgu/api-lambda/dynamodb.mjs (Updated for Pagination)
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-// --- 修改：从 lib-dynamodb 同时导入 Client 和 Command ---
+// 使用 lib-dynamodb 的 ScanCommand 配合 DocumentClient
 import { DynamoDBDocumentClient, ScanCommand } from '@aws-sdk/lib-dynamodb';
 import config from './config.mjs';
 import process from 'node:process';
 
-// 初始化 DynamoDB 客户端 (基础)
 const ddbClient = new DynamoDBClient({ region: process.env.AWS_REGION });
-
-// 使用 Document Client 并进行配置，确保自动 unmarshall
-const marshallOptions = {
-  // 保留空值或未定义值，如果需要
-  // removeUndefinedValues: false,
-};
-const unmarshallOptions = {
-  // 将数字转换为 JS Number 而不是 BigInt，如果需要
-  // wrapNumbers: false,
-};
+const marshallOptions = { removeUndefinedValues: true };
+const unmarshallOptions = {};
 const translateConfig = { marshallOptions, unmarshallOptions };
 const ddbDocClient = DynamoDBDocumentClient.from(ddbClient, translateConfig);
 
-
 /**
- * 从 DynamoDB 获取所有图片元数据 (返回普通 JS 对象)
+ * 从 DynamoDB 获取分页的图片元数据
+ * @param {number} limit - 每页返回的最大项目数
+ * @param {Object | undefined} startKey - DynamoDB Scan 操作的 ExclusiveStartKey
+ * @returns {Promise<{items: Array<Object>, nextToken: Object | undefined}>}
  */
-async function getAllImageData() {
-  console.log(`Scanning DynamoDB table: ${config.dynamoDbTableName} using DocumentClient`);
-  let allItems = [];
-  let lastEvaluatedKey = undefined;
+async function getImageDataPage(limit = 20, startKey = undefined) { // 默认每页 20 条
+  console.log(`Scanning DynamoDB table: ${config.dynamoDbTableName} with Limit=${limit}`, startKey ? `StartKey=${JSON.stringify(startKey)}` : '');
+
+  const scanParams = {
+    TableName: config.dynamoDbTableName,
+    Limit: limit,
+    ExclusiveStartKey: startKey,
+    // ProjectionExpression: "photo_id, description, r2_public_url, ..." // 可选：只获取需要的字段
+  };
 
   try {
-    do {
-      // 使用从 lib-dynamodb 导入的 ScanCommand
-      const scanParams = {
-        TableName: config.dynamoDbTableName,
-        ExclusiveStartKey: lastEvaluatedKey,
-      };
-      const scanCommand = new ScanCommand(scanParams);
+    const scanCommand = new ScanCommand(scanParams);
+    const scanResult = await ddbDocClient.send(scanCommand);
 
-      // 通过 ddbDocClient 发送命令，它会自动处理反序列化 (unmarshalling)
-      const scanResult = await ddbDocClient.send(scanCommand);
+    console.log(`Scan returned ${scanResult.Count || 0} items.`);
 
-      if (scanResult.Items && scanResult.Items.length > 0) {
-        allItems = allItems.concat(scanResult.Items); // Items 应该是普通 JS 对象了
-        console.log(`Scanned ${scanResult.Count} items, Total fetched: ${allItems.length}`);
-      }
-      lastEvaluatedKey = scanResult.LastEvaluatedKey;
-
-    } while (lastEvaluatedKey);
-
-    console.log(`Scan complete. Total items retrieved: ${allItems.length}`);
-    // 现在 allItems 数组里应该是普通的 JS 对象，而不是 DynamoDB JSON 格式
-    return allItems;
+    return {
+        items: scanResult.Items || [], // 返回当前页的项目数组
+        nextToken: scanResult.LastEvaluatedKey // 返回 LastEvaluatedKey 作为下一页的令牌
+    };
 
   } catch (error) {
     console.error(`Error scanning DynamoDB table ${config.dynamoDbTableName}:`, error);
@@ -59,4 +44,5 @@ async function getAllImageData() {
   }
 }
 
-export { getAllImageData };
+// 只导出新的分页函数
+export { getImageDataPage };
