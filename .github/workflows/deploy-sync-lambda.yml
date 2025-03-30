@@ -1,0 +1,55 @@
+name: Deploy Sync Lambda to AWS (OIDC) # 工作流名称
+
+on:
+  push:
+    branches:
+      - main # 只在推送 main 分支时触发
+    paths:
+      # 只在这些路径下的文件发生变化时触发工作流
+      - 'sync-lambda/**'
+      - '.github/workflows/deploy-sync-lambda.yml'
+
+  workflow_dispatch: # 允许手动触发
+
+jobs:
+  deploy:
+    name: Build and Deploy Sync Lambda
+    runs-on: ubuntu-latest # 使用最新的 Ubuntu 运行器
+    permissions: # <--- 需要这些权限来支持 OIDC 和 checkout
+      id-token: write # 允许 Action 获取 OIDC ID token
+      contents: read # 允许 Action 读取仓库内容
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4 # 检出代码
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4 # 设置 Node.js 环境
+        with:
+          node-version: '20' # 指定 Node.js 版本，与 Lambda 运行时匹配
+
+      - name: Configure AWS Credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4 # 使用 AWS 官方 Action
+        with:
+          # 使用 OIDC 扮演角色，不再需要 Access Key
+          role-to-assume: arn:aws:iam::015590450538:role/My_LambdaImageProcessorRole_20250329 # <-- 要扮演的角色 ARN (请确认!)
+          role-session-name: GitHubActionsSyncLambdaDeploy-${{ github.run_id }} # 临时会话名称
+          aws-region: us-west-2 # AWS 区域
+
+      - name: Build and Package Sync Lambda
+        run: |
+          echo "Navigating to sync-lambda directory..."
+          cd sync-lambda
+          echo "Installing dependencies using npm ci..."
+          npm ci # 使用 package-lock.json 安装精确依赖
+          echo "Creating deployment package (zip)..."
+          zip -r ../sync-lambda-deployment.zip . -x "*.git*" # 打包，排除 .git 相关
+
+      - name: Deploy to AWS Lambda
+        run: |
+          echo "Deploying sync-lambda function code..."
+          aws lambda update-function-code \
+            --function-name images_20250329 \
+            --zip-file fileb://../sync-lambda-deployment.zip \
+            --region us-west-2 \
+            --publish # 每次部署发布新版本

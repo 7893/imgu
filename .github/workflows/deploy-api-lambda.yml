@@ -1,0 +1,54 @@
+name: Deploy API Lambda to AWS (OIDC) # 工作流名称
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      # 只在这些路径下的文件发生变化时触发工作流
+      - 'api-lambda/**'
+      - '.github/workflows/deploy-api-lambda.yml'
+
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    name: Build and Deploy API Lambda
+    runs-on: ubuntu-latest
+    permissions: # <--- 需要这些权限
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Configure AWS Credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::015590450538:role/My_LambdaImageProcessorRole_20250329 # <-- 要扮演的角色 ARN (请确认!)
+          role-session-name: GitHubActionsApiLambdaDeploy-${{ github.run_id }}
+          aws-region: us-west-2
+
+      - name: Build and Package API Lambda
+        run: |
+          echo "Navigating to api-lambda directory..."
+          cd api-lambda
+          echo "Installing dependencies using npm ci..."
+          npm ci
+          echo "Creating deployment package (zip)..."
+          zip -r ../api-lambda-deployment.zip . -x "*.git*"
+
+      - name: Deploy to AWS Lambda
+        run: |
+          echo "Deploying api-lambda function code..."
+          aws lambda update-function-code \
+            --function-name images_getImagesApi_20250329 \
+            --zip-file fileb://../api-lambda-deployment.zip \
+            --region us-west-2 \
+            --publish
