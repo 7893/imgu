@@ -62,7 +62,6 @@ export const handler = async (event) => {
 
   // Handle GET / (保持不变)
   if (httpMethod === 'GET' && path === '/') {
-    // ... (代码保持不变) ...
     console.log('Handling GET request for image gallery page');
     try {
       const limit = parseInt(queryParams.limit || '20', 10);
@@ -186,6 +185,8 @@ export const handler = async (event) => {
                     executionArnToStop = syncState.currentExecutionArn;
                     console.log(`Found running execution ARN from DB: ${executionArnToStop}`);
                } else {
+                   // 如果 DB 中没有运行的 ARN，也可能是 STOPPING 状态残留，尝试用 lastKnownStatus 判断？
+                   // 为简单起见，如果没有提供 ARN 且 DB 中没有 RUNNING 的 ARN，则报错
                    throw new Error("Missing executionArn in request body and no running execution found in state.");
                }
           }
@@ -210,7 +211,10 @@ export const handler = async (event) => {
           console.error('Error handling POST /stop-sync request:', error);
           let statusCode = 500;
           if (error.message.includes("Missing executionArn")) statusCode = 400;
-          else if (error.name === 'ExecutionDoesNotExist' || error.message.includes("does not exist")) statusCode = 404;
+          else if (error.name === 'ExecutionDoesNotExist' || error.message.includes("does not exist")) {
+              // 如果执行不存在，可能DB状态需要清理，让 /sync-status 处理
+              statusCode = 404;
+          }
           // 停止失败时，不应更改 DB 状态，让 /sync-status 来处理
           return {
               statusCode: statusCode,
@@ -226,7 +230,7 @@ export const handler = async (event) => {
        try {
             const syncState = await getSyncState(SYNC_TYPE_OLDEST);
             const currentArn = syncState?.currentExecutionArn;
-            const lastStatusInDb = syncState?.lastKnownStatus || STATUS_IDLE; // 从 DB 获取上次状态
+            const lastStatusInDb = syncState?.lastKnownStatus || STATUS_IDLE;
 
             if (currentArn) {
                 console.log(`Found active execution ARN: ${currentArn}. Describing execution...`);
@@ -235,67 +239,69 @@ export const handler = async (event) => {
                     executionDetails = await describeStateMachineExecution(currentArn);
                 } catch (describeError) {
                      console.error(`Error describing execution ${currentArn}:`, describeError);
-                     // 如果 SFN 执行不存在 (可能已过期清理或 ARN 错误)，则清理 DB 状态
                      if (describeError.name === 'ExecutionDoesNotExist') {
                          console.log(`Execution ${currentArn} does not exist. Clearing state.`);
-                         await updateApiSyncState(SYNC_TYPE_OLDEST, { currentExecutionArn: null, lastKnownStatus: STATUS_IDLE }); // 或 FAILED? IDLE更安全
+                         await updateApiSyncState(SYNC_TYPE_OLDEST, { currentExecutionArn: null, lastKnownStatus: STATUS_IDLE }); // 认为它不存在就是 IDLE
                          return {
                              statusCode: 200,
                              headers: { ...corsHeaders, 'Content-Type': 'application/json' },
                              body: JSON.stringify({ status: STATUS_IDLE, message: "Execution not found, state cleared."}),
                          };
                      }
-                     // 其他描述错误，返回未知状态
-                     throw new Error(`Failed to describe execution: ${describeError.message}`);
+                     // 对于其他描述错误，返回上次DB状态，并标记为可能过时
+                     console.warn("Failed to describe execution, returning last known DB status.");
+                      return {
+                         statusCode: 200, // 仍然返回成功，但状态可能不准
+                         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+                         body: JSON.stringify({ status: lastStatusInDb, executionArn: currentArn, stale: true, error: describeError.message }),
+                     };
                 }
 
-                const latestSfnStatus = mapSfnStatus(executionDetails.status); // 映射 SFN 状态
+                const latestSfnStatus = mapSfnStatus(executionDetails.status);
                 console.log(`SFN execution status: ${executionDetails.status} -> Mapped status: ${latestSfnStatus}`);
 
-                // 如果状态是终态，需要更新 DB 并清除 ARN
+                const attributesToUpdate = { lastKnownStatus: latestSfnStatus };
+                let responseStatus = latestSfnStatus;
+
                 if (isTerminalStatus(latestSfnStatus)) {
-                    console.log(`Execution ${currentArn} reached terminal state: ${latestSfnStatus}. Updating DB state and clearing ARN.`);
-                    await updateApiSyncState(SYNC_TYPE_OLDEST, {
-                        currentExecutionArn: null, // 清除 ARN
-                        lastKnownStatus: latestSfnStatus
-                    });
-                    return {
-                        statusCode: 200,
-                        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ status: latestSfnStatus }),
-                    };
-                } else {
-                    // 状态仍在运行 (或未知/停止中)，更新 DB 中的 lastKnownStatus (如果不同)
-                    if (lastStatusInDb !== latestSfnStatus) {
-                        console.log(`Updating DB status from ${lastStatusInDb} to ${latestSfnStatus} for ${currentArn}`);
-                         await updateApiSyncState(SYNC_TYPE_OLDEST, { lastKnownStatus: latestSfnStatus });
-                    }
-                     // 返回当前运行状态
-                     return {
-                         statusCode: 200,
-                         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-                         body: JSON.stringify({ status: latestSfnStatus, executionArn: currentArn }), // 返回 ARN 可能有用
-                     };
+                    console.log(`Execution ${currentArn} reached terminal state: ${latestSfnStatus}. Clearing ARN in DB state.`);
+                    attributesToUpdate.currentExecutionArn = null; // 清除 ARN
+                } else if (latestSfnStatus === STATUS_RUNNING && lastStatusInDb === STATUS_STOPPING) {
+                     // 如果 SFN 仍在运行，但 DB 标记为 STOPPING，则保持 STOPPING 状态，等待 SFN 真正停止
+                     console.log("SFN is RUNNING, but DB status is STOPPING. Reporting STOPPING.");
+                     attributesToUpdate.lastKnownStatus = STATUS_STOPPING; // 保持 STOPPING
+                     responseStatus = STATUS_STOPPING;
+                 }
+
+
+                // 只有当状态变化或需要清除 ARN 时才更新 DB
+                if (lastStatusInDb !== attributesToUpdate.lastKnownStatus || attributesToUpdate.currentExecutionArn === null) {
+                    console.log("Updating DB state:", attributesToUpdate);
+                    await updateApiSyncState(SYNC_TYPE_OLDEST, attributesToUpdate);
                 }
 
-            } else {
-                // 没有 currentExecutionArn，状态应为 IDLE 或上次的终态
-                console.log(`No active execution ARN found. Current DB status: ${lastStatusInDb}`);
-                // 如果上次状态是 RUNNING 或 STOPPING 但 ARN 丢失了，重置为 IDLE (或 FAILED?)
-                 if (lastStatusInDb === STATUS_RUNNING || lastStatusInDb === STATUS_STOPPING) {
-                     console.warn("Inconsistent state: No ARN found but last status was RUNNING/STOPPING. Resetting to IDLE.");
-                     await updateApiSyncState(SYNC_TYPE_OLDEST, { lastKnownStatus: STATUS_IDLE });
-                     return {
-                         statusCode: 200,
-                         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-                         body: JSON.stringify({ status: STATUS_IDLE }),
-                     };
-                 }
-                 // 返回上次记录的终态或 IDLE
                  return {
                      statusCode: 200,
                      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-                     body: JSON.stringify({ status: lastStatusInDb || STATUS_IDLE }),
+                     body: JSON.stringify({ status: responseStatus, executionArn: isTerminalStatus(latestSfnStatus) ? null : currentArn }),
+                 };
+
+            } else {
+                // 没有 currentExecutionArn
+                console.log(`No active execution ARN found. Last known DB status: ${lastStatusInDb}`);
+                let finalStatus = lastStatusInDb;
+                 // 如果上次状态是 RUNNING 或 STOPPING 但 ARN 丢失了，重置为 IDLE 或 FAILED 更合适？
+                 if (lastStatusInDb === STATUS_RUNNING || lastStatusInDb === STATUS_STOPPING) {
+                     console.warn("Inconsistent state: No ARN found but last status was RUNNING/STOPPING. Reporting as FAILED (assumed).");
+                     // 假设这种情况是异常结束，标记为 FAILED 比 IDLE 更能反映问题
+                     finalStatus = STATUS_FAILED;
+                     // 更新 DB 状态以反映此假设
+                     await updateApiSyncState(SYNC_TYPE_OLDEST, { lastKnownStatus: finalStatus });
+                 }
+                 return {
+                     statusCode: 200,
+                     headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+                     body: JSON.stringify({ status: finalStatus }),
                  };
             }
 

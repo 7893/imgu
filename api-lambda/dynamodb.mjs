@@ -15,7 +15,6 @@ const ddbDocClient = DynamoDBDocumentClient.from(ddbClient, translateConfig);
  * 从 DynamoDB 获取分页的图片元数据 (保持不变)
  */
 async function getImageDataPage(limit = 20, startKey = undefined) {
-  // ... (代码保持不变) ...
   console.log(`Scanning DynamoDB table: ${config.dynamoDbTableName} with Limit=${limit}`, startKey ? `StartKey=${JSON.stringify(startKey)}` : '');
   const scanParams = {
     TableName: config.dynamoDbTableName,
@@ -37,7 +36,6 @@ async function getImageDataPage(limit = 20, startKey = undefined) {
  * 从 sync_control 表获取同步状态 (保持不变)
  */
 async function getSyncState(syncType) {
-  // ... (代码保持不变) ...
   if (!config.dynamoDbSyncControlTableName) {
       console.error("Sync control table name not configured.");
       throw new Error("Sync control table name not configured.");
@@ -45,16 +43,16 @@ async function getSyncState(syncType) {
   console.log(`Getting sync state for type: ${syncType} from table: ${config.dynamoDbSyncControlTableName}`);
   const getParams = {
     TableName: config.dynamoDbSyncControlTableName,
-    Key: { syncType: syncType },
+    Key: { syncType: syncType }, // 使用 'syncType' 作为 Key
   };
   try {
     const command = new GetCommand(getParams);
     const result = await ddbDocClient.send(command);
     console.log(`Get sync state result for ${syncType}:`, result.Item ? 'Found' : 'Not Found');
-    return result.Item;
+    return result.Item; // 返回整个项目，包含 lastProcessedPage 等
   } catch (error) {
     console.error(`Error getting sync state for ${syncType} from DynamoDB:`, error);
-    throw error;
+    throw error; // 让错误冒泡
   }
 }
 
@@ -105,6 +103,7 @@ async function updateApiSyncState(syncType, attributesToUpdate) {
     }
 
     if (removeExpressions.length > 0) {
+        // 确保 SET 和 REMOVE 之间有空格
         updateExpression += ' REMOVE ' + removeExpressions.join(', ');
     }
 
