@@ -14,3 +14,5 @@ frontend/.env*.local
 # Lambda specific ignores
 sync-lambda/node_modules
 api-lambda/node_modules
+sync-lambda/dist
+api-lambda/dist

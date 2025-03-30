@@ -2,17 +2,22 @@
   "name": "api-lambda",
   "version": "1.0.0",
   "description": "",
-  "main": "index.js",
+  "main": "dist/index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "build": "esbuild index.mjs --bundle --outfile=dist/index.js --platform=node --format=cjs --minify --sourcemap --target=node20"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "type": "module",
   "dependencies": {
-    "@aws-sdk/client-dynamodb": "^3.777.0",
-    "@aws-sdk/client-sfn": "^3.777.0",
-    "@aws-sdk/lib-dynamodb": "^3.778.0"
+    "@aws-sdk/client-dynamodb": "^3.xxx.x",
+    "@aws-sdk/client-sfn": "^3.xxx.x",
+    "@aws-sdk/lib-dynamodb": "^3.xxx.x"
+  },
+  "devDependencies": {
+    "esbuild": "^0.x.x"
   }
 }
+
