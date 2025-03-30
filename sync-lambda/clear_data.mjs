@@ -1,10 +1,9 @@
-// /home/admin/imgu/sync-lambda/clear_data.js (Using CommonJS require)
-// 导入需要的模块
-const { S3Client, ListObjectsV2Command, DeleteObjectsCommand } = require('@aws-sdk/client-s3');
-const { DynamoDBClient, ScanCommand, BatchWriteItemCommand } = require('@aws-sdk/client-dynamodb');
-const { DynamoDBDocumentClient } = require('@aws-sdk/lib-dynamodb');
-const process = require('node:process');
-const readline = require('node:readline/promises');
+// /home/admin/imgu/sync-lambda/clear_data.mjs (Using ES Module Imports)
+import { S3Client, ListObjectsV2Command, DeleteObjectsCommand } from '@aws-sdk/client-s3';
+import { DynamoDBClient, ScanCommand, BatchWriteItemCommand } from '@aws-sdk/client-dynamodb'; // Commands from client
+import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb'; // DocClient from lib
+import process from 'node:process';
+import * as readline from 'node:readline/promises';
 
 // --- 配置 (从环境变量读取) ---
 const config = {
@@ -42,7 +41,7 @@ const rl = readline.createInterface({ input: process.stdin, output: process.stdo
 // --- 辅助函数 ---
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-// --- 清理 R2 函数 (与 #76 代码相同) ---
+// --- 清理 R2 函数 ---
 async function clearR2Bucket() {
     console.log(`准备清空 R2 存储桶: ${config.r2BucketName}...`);
     let objectCount = 0;
@@ -77,7 +76,7 @@ async function clearR2Bucket() {
     console.log(`R2 存储桶 ${config.r2BucketName} 清理完成，共处理约 ${objectCount} 个对象。`);
 }
 
-// --- 带重试的 DynamoDB 批量写入函数 (与 #76 代码相同) ---
+// --- 带重试的 DynamoDB 批量写入函数 ---
 async function sendBatchWriteWithRetry(tableName, deleteRequests, maxRetries = 5, initialDelayMs = 200) {
     if (!deleteRequests || deleteRequests.length === 0) return true;
     let currentRequests = [...deleteRequests];
@@ -87,10 +86,10 @@ async function sendBatchWriteWithRetry(tableName, deleteRequests, maxRetries = 5
     while (currentRequests.length > 0 && attempts < maxRetries) {
         attempts++;
         const batchWriteParams = { RequestItems: { [tableName]: currentRequests } };
-        const batchWriteCommand = new BatchWriteItemCommand(batchWriteParams); // 使用 require 导入的 Command
+        const batchWriteCommand = new BatchWriteItemCommand(batchWriteParams); // 使用 import 导入的 Command
         try {
             console.log(`(尝试 #${attempts}) 发送删除请求 ${currentRequests.length} 个项目...`);
-            const result = await ddbDocClient.send(batchWriteCommand); // 通过 DocClient 发送
+            const result = await ddbDocClient.send(batchWriteCommand);
             if (result.UnprocessedItems && Object.keys(result.UnprocessedItems).length > 0 && result.UnprocessedItems[tableName]) {
                 currentRequests = result.UnprocessedItems[tableName];
                 console.warn(`警告：有 ${currentRequests.length} 个项目未被处理，将在 ${delayMs}ms 后重试...`);
@@ -104,7 +103,7 @@ async function sendBatchWriteWithRetry(tableName, deleteRequests, maxRetries = 5
                 delayMs = Math.min(delayMs * 2, 5000);
             } else {
                 console.error(`发送批量删除 DynamoDB 项目时遇到非限流错误 (尝试 #${attempts}):`, error);
-                overallSuccess = false; currentRequests = []; // 退出循环
+                overallSuccess = false; currentRequests = [];
             }
         }
     }
@@ -112,7 +111,7 @@ async function sendBatchWriteWithRetry(tableName, deleteRequests, maxRetries = 5
     return overallSuccess;
 }
 
-// --- 清理 DynamoDB 表函数 (与 #76 代码相同，调用重试函数) ---
+// --- 清理 DynamoDB 表函数 ---
 async function clearDynamoDBTable() {
     console.log(`准备清空 DynamoDB 表: ${config.dynamoDbTableName}...`);
     let itemCount = 0;
@@ -120,7 +119,7 @@ async function clearDynamoDBTable() {
     let allBatchesSucceeded = true;
     do {
         const scanParams = { TableName: config.dynamoDbTableName, ProjectionExpression: 'photo_id', ExclusiveStartKey: lastEvaluatedKey };
-        const scanCommand = new ScanCommand(scanParams); // 使用 require 导入的 Command
+        const scanCommand = new ScanCommand(scanParams); // 使用 import 导入的 Command
         let scanResponse;
         try { scanResponse = await ddbDocClient.send(scanCommand); }
         catch(error) { console.error(`扫描 DynamoDB 表时出错: ${error.message}`); throw error; }
@@ -145,7 +144,7 @@ async function clearDynamoDBTable() {
     return allBatchesSucceeded;
 }
 
-// --- 主执行函数 (与 #76 代码相同) ---
+// --- 主执行函数 ---
 async function main() {
     console.log('--- 数据清理脚本 ---');
     console.log(`将要清空 R2 存储桶: ${config.r2BucketName}`);
