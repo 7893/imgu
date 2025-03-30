@@ -1,33 +1,13 @@
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
+/* /home/admin/imgu/frontend/src/app/globals.css (Simplified Nginx-like style) */
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
-}
-
-html,
-body {
-  max-width: 100vw;
-  overflow-x: hidden;
-}
-
-body {
-  color: var(--foreground);
-  background: var(--background);
-  font-family: Arial, Helvetica, sans-serif;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-}
-
-* {
-  box-sizing: border-box;
-  padding: 0;
+/* 重置一些默认样式 */
+body, html {
   margin: 0;
+  padding: 0;
+  font-family: var(--font-noto-sans-sc), -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Oxygen, Ubuntu, Cantarell, Fira Sans, Droid Sans, Helvetica Neue, sans-serif; /* 使用导入的字体 */
+  line-height: 1.6;
+  background-color: #fff;
+  color: #333;
 }
 
 a {
@@ -35,8 +15,64 @@ a {
   text-decoration: none;
 }
 
-@media (prefers-color-scheme: dark) {
-  html {
-    color-scheme: dark;
-  }
+/* 主内容区域 */
+main {
+  max-width: 1000px; /* 可以调整宽度 */
+  margin: 20px auto;
+  padding: 15px;
+}
+
+h1, h2 {
+  border-bottom: 1px solid #ccc;
+  padding-bottom: 5px;
+  margin-bottom: 15px;
+}
+
+/* 表格样式 - 模仿 Nginx 列表 */
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 15px;
+}
+
+th, td {
+  text-align: left;
+  padding: 8px 10px;
+  border-bottom: 1px solid #eee; /* 轻微的下边框 */
+  vertical-align: top;
+  font-size: 0.95em;
+}
+
+th {
+  border-bottom: 2px solid #ddd; /* 表头下边框稍重 */
+  font-weight: normal; /* Nginx 风格表头通常不是粗体 */
+  color: #555;
+}
+
+/* 去掉最后一行的下边框 */
+tr:last-child td {
+  border-bottom: none;
+}
+
+/* 按钮样式 */
+button {
+  padding: 8px 15px;
+  cursor: pointer;
+  border: 1px solid #ccc;
+  background-color: #f7f7f7;
+  border-radius: 3px;
+}
+
+button:hover {
+  background-color: #eee;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+/* 允许长文件名换行 */
+td:nth-child(2) { /* 假设第二列是 R2 Key */
+   word-break: break-all;
 }
