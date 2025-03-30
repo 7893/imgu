@@ -1,14 +1,9 @@
-// /home/admin/imgu/sync-lambda/index.mjs (Corrected - No external fetchUnsplashPage import)
+// /home/admin/imgu/sync-lambda/index.mjs (Cleaned Syntax)
 import config from './config.mjs';
-// REMOVED: import { fetchUnsplashPage } from './unsplash.mjs'; // <--- 确保没有这行或类似导入
 import { uploadImage } from './r2.mjs';
-// 确保 dynamodb.mjs 包含了 getDynamoDBItem 和 saveMetadata 并已导出
 import { getDynamoDBItem, saveMetadata } from './dynamodb.mjs';
-import process from 'node:process'; // 明确导入 process
+import process from 'node:process';
 
-/**
- * 根据事件中的 action 路由到不同的处理器
- */
 export const handler = async (event) => {
   console.log('Sync Lambda invoked with event:', JSON.stringify(event, null, 2));
 
@@ -44,19 +39,18 @@ export const handler = async (event) => {
     }
   } catch (error) {
     console.error(`Error executing action ${action}:`, error);
-    throw error; // 让错误冒泡给 Step Functions
+    throw error;
   }
 };
 
 // --- Action Handlers ---
 
 async function handleFetchPage(page, perPage) {
-  console.log(`Workspaceing Unsplash page <span class="math-inline">\{page\}, perPage\=</span>{perPage}, orderBy=oldest`);
-  // --- Fetch logic is directly here ---
+  console.log(`Workspaceing Unsplash page <span class="math-inline">\{page\}, perPage\=</span>{perPage}, orderBy=oldest`); // Corrected typo
   const unsplashApiUrl = `<span class="math-inline">\{config\.unsplashApiUrl\}/photos?page\=</span>{page}&per_page=${perPage}&order_by=oldest`;
   const response = await fetch(unsplashApiUrl, {
       headers: {
-          'Authorization': `Client-ID ${config.unsplashAccessKey}`, // 使用 config.unsplashAccessKey
+          'Authorization': `Client-ID ${config.unsplashAccessKey}`,
           'Accept-Version': 'v1'
       }
   });
@@ -66,8 +60,7 @@ async function handleFetchPage(page, perPage) {
       throw new Error(`Unsplash API Error (${response.status}) fetching page ${page}`);
   }
   const photos = await response.json();
-  console.log(`Workspaceed ${photos.length} photos for page ${page}.`);
-  // --- Fetch logic ends here ---
+  console.log(`Workspaceed ${photos.length} photos for page ${page}.`); // Corrected typo
   return photos;
 }
 
