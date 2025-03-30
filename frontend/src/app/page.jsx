@@ -1,74 +1,121 @@
-// /home/admin/imgu/frontend/src/app/page.jsx (Updated to display metadata list)
+// /home/admin/imgu/frontend/src/app/page.jsx (Updated with Pagination)
 "use client";
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
+
+// --- 格式化字节大小的辅助函数 ---
+function formatBytes(bytes, decimals = 2) {
+  if (!+bytes) return '0 Bytes';
+  const k = 1024;
+  const dm = decimals < 0 ? 0 : decimals;
+  const sizes = ["Bytes", "KB", "MB", "GB", "TB", "PB", "EB", "ZB", "YB"];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return `${parseFloat((bytes / Math.pow(k, i)).toFixed(dm))} ${sizes[i]}`;
+}
 
 export default function HomePage() {
-  const [images, setImages] = useState([]);
-  const [loading, setLoading] = useState(true);
+  // --- State Variables ---
+  const [images, setImages] = useState([]); // 存储所有已加载的图片
+  const [loadingInitial, setLoadingInitial] = useState(true); // 仅用于初始加载
+  const [loadingMore, setLoadingMore] = useState(false); // 用于加载更多时的状态
   const [error, setError] = useState(null);
+  const [nextToken, setNextToken] = useState(null); // 存储下一页的令牌
   const [syncStatus, setSyncStatus] = useState('');
   const [isSyncing, setIsSyncing] = useState(false);
 
   const apiUrl = process.env.NEXT_PUBLIC_API_URL;
-  // Construct the start sync URL safely, ensuring no double slash if apiUrl ends with one
   const startSyncUrl = apiUrl ? `${apiUrl.replace(/\/$/, '')}/start-sync` : null;
 
-  useEffect(() => {
-    async function fetchImageData() {
-      if (!apiUrl) {
-        setError("API URL configuration missing.");
-        setLoading(false);
-        return;
+  // --- 获取数据的函数 (现在可以被多次调用) ---
+  // useCallback 避免在每次渲染时重新创建函数
+  const fetchImageData = useCallback(async (token = null) => {
+    if (!apiUrl) {
+      setError("API URL configuration missing.");
+      setLoadingInitial(false); // 初始加载结束
+      return;
+    }
+
+    // 根据是否有 token 判断是初始加载还是加载更多
+    if (!token) {
+      setLoadingInitial(true); // 开始初始加载
+    } else {
+      setLoadingMore(true); // 开始加载更多
+    }
+    setError(null);
+
+    // 构建带 token 的 URL (如果 token 存在)
+    const urlToFetch = token ? `${apiUrl}?nextToken=${encodeURIComponent(token)}` : apiUrl;
+    console.log(`Workspaceing data from: ${urlToFetch}`);
+
+    try {
+      const response = await fetch(urlToFetch); // GET 请求
+      if (!response.ok) {
+        let errorMsg = `HTTP error fetching image list! status: ${response.status}`;
+        try { const errorData = await response.json(); errorMsg += `, message: ${errorData.message || 'No details'}`; } catch (e) {}
+        throw new Error(errorMsg);
       }
-      console.log(`Workspaceing data from: ${apiUrl}`);
-      setLoading(true);
-      setError(null);
-      try {
-        const response = await fetch(apiUrl); // GET / to fetch image list
-        if (!response.ok) throw new Error(`HTTP error fetching image list! status: ${response.status}`);
-        const data = await response.json();
-        if (data && data.length > 0) console.log('First image data sample:', data[0]);
-        console.log("Image list fetched successfully:", data.length);
-        setImages(data);
-      } catch (e) {
-        console.error("Failed to fetch images:", e);
-        if (e instanceof TypeError && e.message.includes('fetch')) { // Broader check for fetch errors
+
+      const data = await response.json(); // 期望格式 { items: [...], nextToken: '...' | null }
+      console.log("Data page fetched successfully:", data.items?.length || 0, "items. Next token:", data.nextToken);
+
+      if (data && data.items) {
+        // 如果是初始加载，直接设置；如果是加载更多，则追加
+        setImages(prevImages => token ? [...prevImages, ...data.items] : data.items);
+        setNextToken(data.nextToken); // 更新下一页的令牌
+      } else {
+        // API 返回格式不正确或 items 丢失
+        throw new Error("Invalid data format received from API.");
+      }
+
+    } catch (e) {
+      console.error("Failed to fetch images:", e);
+       if (e instanceof TypeError && e.message.includes('fetch')) {
              setError(`Network error: Failed to fetch image list from API. Check network or CORS.`);
         } else {
              setError(`Failed to load images: ${e.message}`);
         }
-      } finally {
-        setLoading(false);
-      }
+    } finally {
+      // 结束加载状态
+      if (!token) setLoadingInitial(false);
+      setLoadingMore(false);
     }
-    fetchImageData();
-  }, [apiUrl]);
+  }, [apiUrl]); // 依赖 apiUrl
 
-  const handleStartSync = async () => {
-      if (!startSyncUrl) {
-          setSyncStatus('Error: API URL not configured properly.');
-          return;
-      }
-      setSyncStatus('Initiating sync process...');
-      setIsSyncing(true);
+  // --- 初始加载 Effect ---
+  useEffect(() => {
+    fetchImageData(); // 首次加载时不传递 token
+  }, [fetchImageData]); // 当 fetchImageData 函数变化时 (主要是 apiUrl 变化时)
 
-      try {
-          const response = await fetch(startSyncUrl, { method: 'POST' });
-          const result = await response.json();
-
-          if (!response.ok || response.status !== 202) { // Check for non-202 status as well
-              throw new Error(result.message || `Failed to start sync (${response.status})`);
-          }
-          setSyncStatus(`Sync process initiated successfully! Execution ARN: ${result.executionArn || 'N/A'}`);
-      } catch (error) {
-          console.error('Error starting sync:', error);
-          setSyncStatus(`Error starting sync: ${error.message}`);
-          setIsSyncing(false);
-      }
-      // Optional: Clear status and re-enable button after a delay
-      // setTimeout(() => { setSyncStatus(''); setIsSyncing(false); }, 10000);
+  // --- 点击加载更多的处理函数 ---
+  const handleLoadMore = () => {
+    if (nextToken && !loadingMore) {
+      fetchImageData(nextToken); // 传递当前存储的 token
+    }
   };
+
+  // --- 点击启动同步的函数 ---
+  const handleStartSync = async () => {
+    // ... (这部分逻辑不变) ...
+    if (!startSyncUrl) {
+        setSyncStatus('Error: API URL not configured properly.');
+        return;
+    }
+    setSyncStatus('Initiating sync process...');
+    setIsSyncing(true);
+    try {
+        const response = await fetch(startSyncUrl, { method: 'POST' });
+        const result = await response.json();
+        if (!response.ok || response.status !== 202) {
+            throw new Error(result.message || `Failed to start sync (${response.status})`);
+        }
+        setSyncStatus(`Sync process initiated successfully! Execution ARN: ${result.executionArn || 'N/A'}`);
+    } catch (error) {
+        console.error('Error starting sync:', error);
+        setSyncStatus(`Error starting sync: ${error.message}`);
+        setIsSyncing(false);
+    }
+  };
+
 
   // --- Render Logic ---
   return (
@@ -86,10 +133,13 @@ export default function HomePage() {
 
       {/* --- 图片元数据展示 --- */}
       <h2>Synchronized Image Metadata</h2>
-      {loading && <p>Loading metadata...</p>}
+      {/* 初始加载状态 */}
+      {loadingInitial && <p>Loading initial metadata...</p>}
+      {/* 加载错误 */}
       {error && <p style={{ color: 'red' }}>Error loading metadata: {error}</p>}
-      {!loading && !error && (
-        <div style={{ overflowX: 'auto' }}> {/* Add scroll for smaller screens */}
+      {/* 表格数据 */}
+      {!loadingInitial && !error && (
+        <div style={{ overflowX: 'auto' }}>
           {images.length === 0 ? (
             <p>No image metadata found. Try starting the sync?</p>
           ) : (
@@ -99,6 +149,7 @@ export default function HomePage() {
                   <th style={{ textAlign: 'left', padding: '8px' }}>Category</th>
                   <th style={{ textAlign: 'left', padding: '8px' }}>R2 Object Key</th>
                   <th style={{ textAlign: 'left', padding: '8px' }}>Dimensions</th>
+                  <th style={{ textAlign: 'left', padding: '8px' }}>File Size</th>
                   <th style={{ textAlign: 'left', padding: '8px' }}>Sync Timestamp</th>
                   <th style={{ textAlign: 'left', padding: '8px' }}>Unsplash ID</th>
                 </tr>
@@ -108,17 +159,26 @@ export default function HomePage() {
                   <tr key={image.photo_id} style={{ borderBottom: '1px solid #eee' }}>
                     <td style={{ padding: '8px' }}>{image.image_category || 'N/A'}</td>
                     <td style={{ padding: '8px', wordBreak: 'break-all' }}>{image.r2_object_key || 'N/A'}</td>
-                    {/* 确认 width 和 height 是直接可访问的数字 */}
                     <td style={{ padding: '8px' }}>{image.width && image.height ? `${image.width} x ${image.height}` : 'N/A'}</td>
+                    <td style={{ padding: '8px' }}>
+                      {typeof image.r2_object_size_bytes === 'number' ? formatBytes(image.r2_object_size_bytes) : 'N/A'}
+                    </td>
                     <td style={{ padding: '8px' }}>{image.sync_timestamp ? new Date(image.sync_timestamp).toLocaleString() : 'N/A'}</td>
                     <td style={{ padding: '8px' }}>{image.id || image.photo_id}</td>
-                    {/* 这里不再包含 <img> 标签 */}
                   </tr>
                 ))}
               </tbody>
             </table>
           )}
         </div>
+      )}
+      {/* --- 加载更多按钮 --- */}
+      {!loadingInitial && !error && nextToken && ( // 只有在非初始加载、无错误且有下一页令牌时显示
+          <div style={{ marginTop: '20px', textAlign: 'center' }}>
+              <button onClick={handleLoadMore} disabled={loadingMore}>
+                  {loadingMore ? 'Loading...' : 'Load More'}
+              </button>
+          </div>
       )}
     </main>
   );
