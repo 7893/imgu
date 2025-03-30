@@ -1,4 +1,5 @@
 // index.mjs
+// testing github actions workflow
 import config from './config.mjs';
 import { fetchPhotos } from './unsplash.mjs';
 import { uploadImage } from './r2.mjs';
