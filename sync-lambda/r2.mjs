@@ -1,17 +1,37 @@
-// r2.mjs
+// /home/admin/imgu/sync-lambda/r2.mjs (Updated for SSM secrets & lazy client init)
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 import config from './config.mjs';
+// 导入获取密钥的函数
+import { getSecrets } from './secrets.mjs';
 
-// 初始化 R2 (S3 兼容) 客户端
-// R2 对 region 不敏感，但 SDK 需要一个值，"auto" 通常适用于 R2
-const s3Client = new S3Client({
-  region: 'auto',
-  endpoint: config.r2EndpointUrl,
-  credentials: {
-    accessKeyId: config.r2AccessKeyId,
-    secretAccessKey: config.r2SecretAccessKey,
-  },
-});
+// 将 S3 客户端初始化推迟到第一次使用时
+let s3Client = null;
+
+async function initializeS3Client() {
+    if (!s3Client) {
+        console.log("Initializing S3 Client for R2...");
+        try {
+            const secrets = await getSecrets(); // 获取密钥
+            if (!secrets || !secrets.r2AccessKeyId || !secrets.r2SecretAccessKey) {
+                 throw new Error("R2 credentials not loaded from secrets helper.");
+            }
+            s3Client = new S3Client({
+                region: 'auto', // R2 is region-agnostic
+                endpoint: config.r2EndpointUrl,
+                credentials: {
+                    accessKeyId: secrets.r2AccessKeyId,
+                    secretAccessKey: secrets.r2SecretAccessKey,
+                },
+            });
+            console.log("S3 Client initialized successfully.");
+        } catch (error) {
+             console.error("Failed to initialize S3 client:", error);
+             throw error; // Propagate error
+        }
+    }
+    return s3Client;
+}
+
 
 /**
  * 上传图片到 Cloudflare R2
@@ -21,6 +41,12 @@ const s3Client = new S3Client({
  * @returns {Promise<void>}
  */
 async function uploadImage(key, body, contentType) {
+  // 确保客户端已初始化
+  const client = await initializeS3Client();
+  if (!client) {
+      throw new Error("S3 Client could not be initialized.");
+  }
+
   console.log(`Uploading to R2: Bucket=${config.r2BucketName}, Key=${key}, ContentType=${contentType}`);
 
   const putObjectParams = {
@@ -28,17 +54,15 @@ async function uploadImage(key, body, contentType) {
     Key: key,
     Body: body,
     ContentType: contentType,
-    // 可以添加 ACL 控制，但对于公开访问的桶，通常不需要
-    // ACL: 'public-read' // 如果桶不是默认公开读，可能需要设置
   };
 
   try {
     const command = new PutObjectCommand(putObjectParams);
-    await s3Client.send(command);
+    await client.send(command); // 使用获取到的 client
     console.log(`Successfully uploaded ${key} to R2.`);
   } catch (error) {
     console.error(`Error uploading ${key} to R2:`, error);
-    throw error; // 让错误冒泡
+    throw error;
   }
 }
 
