@@ -1,8 +1,8 @@
-// /home/admin/imgu/sync-lambda/index.mjs (Updated to read headers and pass apiLimits)
+// /home/admin/imgu/sync-lambda/index.mjs (Correct version using SSM Secrets)
 import config from './config.mjs';
 import { uploadImage } from './r2.mjs';
 import { getDynamoDBItem, saveMetadata, updateSyncState } from './dynamodb.mjs';
-import { getSecrets } from './secrets.mjs';
+import { getSecrets } from './secrets.mjs'; // 导入获取密钥的函数
 import process from 'node:process';
 
 function sanitizeFolderName(name) {
@@ -20,7 +20,7 @@ export const handler = async (event) => {
 
   let secrets;
    try {
-       secrets = await getSecrets();
+       secrets = await getSecrets(); // 在 handler 开始时加载密钥
    } catch (error) {
        console.error("CRITICAL: Failed to load secrets.", error);
        throw new Error(`Failed to load secrets: ${error.message}`);
@@ -28,10 +28,8 @@ export const handler = async (event) => {
 
   const action = event.action;
   const payload = event.payload || {};
-  // 尝试从 SFN iterator 或 payload 获取页码，主要用于日志
   const currentPage = event.iteratorConfig?.CurrentPage ?? event?.iterator?.currentPage ?? payload?.processedPage;
-  // 获取 apiLimits (如果从 SFN 状态传递过来)
-  const apiLimitsFromState = event.apiLimits; // Assumes FetchUnsplashPage merges output correctly
+  const apiLimitsFromState = event.apiLimits;
 
   try {
     switch (action) {
@@ -39,13 +37,11 @@ export const handler = async (event) => {
         if (event.iteratorConfig?.CurrentPage === undefined || event.iteratorConfig?.BatchSize === undefined) {
             throw new Error('Missing iteratorConfig.CurrentPage or iteratorConfig.BatchSize for FETCH_UNSPLASH_PAGE');
         }
-        // handleFetchPage 现在返回 { photos, apiLimits }
         const { photos, apiLimits: fetchedApiLimits } = await handleFetchPage(
             event.iteratorConfig.CurrentPage,
             event.iteratorConfig.BatchSize,
-            secrets.unsplashApiKey
+            secrets.unsplashApiKey // 使用从 SSM 获取的 Key
         );
-        // 返回包含 photos 和 apiLimits 的对象，供 SFN 下一步使用
         return { photos: photos, apiLimits: fetchedApiLimits };
 
       case 'CHECK_PHOTO_EXISTS':
@@ -63,40 +59,37 @@ export const handler = async (event) => {
         const pageNum = parseInt(payload.processedPage, 10);
         if (isNaN(pageNum)) { throw new Error(`Invalid processedPage in payload: ${payload.processedPage}`); }
 
-        // 准备要更新的属性
-        const attributesToUpdate = {
-            currentSyncPage: pageNum
-        };
-        // 添加从 SFN 状态传递过来的 API 限制信息 (payload 中应包含)
+        const attributesToUpdate = { currentSyncPage: pageNum };
         if (payload.apiLimits) {
             attributesToUpdate.apiLimits = {
                 unsplashLimit: payload.apiLimits.limit !== undefined ? parseInt(payload.apiLimits.limit, 10) : null,
                 unsplashRemaining: payload.apiLimits.remaining !== undefined ? parseInt(payload.apiLimits.remaining, 10) : null,
-                lastCheckedTimestamp: new Date().toISOString() // 使用当前时间作为检查时间
+                lastCheckedTimestamp: new Date().toISOString()
+            };
+        } else if (apiLimitsFromState) {
+             attributesToUpdate.apiLimits = {
+                unsplashLimit: apiLimitsFromState.limit !== undefined ? parseInt(apiLimitsFromState.limit, 10) : null,
+                unsplashRemaining: apiLimitsFromState.remaining !== undefined ? parseInt(apiLimitsFromState.remaining, 10) : null,
+                lastCheckedTimestamp: new Date().toISOString()
             };
         }
 
         await updateSyncState(payload.syncType, attributesToUpdate);
         return { success: true, message: `Sync state updated for ${payload.syncType} to page ${pageNum}` };
 
-      // --- 新增 FINALIZE_SYNC Action Handler ---
       case 'FINALIZE_SYNC':
          if (!payload.syncType || !payload.status) { throw new Error('Missing syncType or status in payload for FINALIZE_SYNC'); }
          console.log(`Finalizing sync for ${payload.syncType} with status ${payload.status}`);
          const finalAttributes = {
-             currentSyncPage: null, // 清除当前页码
+             currentSyncPage: null,
              lastRunStats: {
-                 // startTime: payload.startTime, // 需要从 SFN 传递 startTime
                  endTime: new Date().toISOString(),
-                 status: payload.status, // SUCCEEDED, FAILED, ABORTED
-                 errorInfo: payload.errorInfo || null // 错误信息摘要
-                 // fileCount: payload.fileCount, // 需要 SFN 聚合或 Lambda 计算
-                 // totalSize: payload.totalSize // 需要 SFN 聚合或 Lambda 计算
+                 status: payload.status,
+                 errorInfo: payload.errorInfo || null
              }
          };
          await updateSyncState(payload.syncType, finalAttributes);
          return { success: true, message: `Sync finalized for ${payload.syncType} with status ${payload.status}` };
-      // --- 结束新增 ---
 
       default:
         console.error('Unknown action requested:', action);
@@ -104,22 +97,19 @@ export const handler = async (event) => {
     }
   } catch (error) {
     const pageInfo = currentPage !== undefined ? ` (Page ${currentPage})` : '';
-    console.error(`Error executing action ${action}${pageInfo}:`, error);
-    error.message = `Action ${action} failed${pageInfo}: ${error.message}`;
+    console.error(`Error executing action <span class="math-inline">\{action\}</span>{pageInfo}:`, error);
+    error.message = `Action <span class="math-inline">\{action\} failed</span>{pageInfo}: ${error.message}`;
     throw error;
   }
 };
 
-// handleFetchPage 修改为返回 apiLimits
 async function handleFetchPage(page, perPage, unsplashApiKey) {
   if (!unsplashApiKey) { throw new Error("Unsplash API Key is missing."); }
-  console.log(`Workspaceing Unsplash page ${page}, perPage=${perPage}, orderBy=latest`);
-  const unsplashApiUrl = `${config.unsplashApiUrl}/photos?page=${page}&per_page=${perPage}&order_by=latest`;
+  console.log(`Workspaceing Unsplash page <span class="math-inline">\{page\}, perPage\=</span>{perPage}, orderBy=latest`);
+  const unsplashApiUrl = `<span class="math-inline">\{config\.unsplashApiUrl\}/photos?page\=</span>{page}&per_page=${perPage}&order_by=latest`;
   const response = await fetch(unsplashApiUrl, {
       headers: { 'Authorization': `Client-ID ${unsplashApiKey}`, 'Accept-Version': 'v1' }
   });
-
-  // 读取 Rate Limit Headers
   const limitHeader = response.headers.get('x-ratelimit-limit');
   const remainingHeader = response.headers.get('x-ratelimit-remaining');
   const apiLimits = {
@@ -127,15 +117,19 @@ async function handleFetchPage(page, perPage, unsplashApiKey) {
       remaining: remainingHeader ? parseInt(remainingHeader, 10) : null
   };
   console.log('Unsplash API Limits:', apiLimits);
-
   if (!response.ok) { const errorBody = await response.text(); console.error(`Unsplash API Error (${response.status}) fetching page ${page}: ${errorBody}`); throw new Error(`Unsplash API Error (${response.status}) fetching page ${page}`); }
   const photos = await response.json(); console.log(`Workspaceed ${photos.length} photos for page ${page}.`);
-
-  // 返回 photos 和 apiLimits
   return { photos, apiLimits };
 }
-
-// handleCheckExists 保持不变
-async function handleCheckExists(photoId) { /* ... */ }
-// handleDownloadAndStore 保持不变
-async function handleDownloadAndStore(photoData) { /* ... */ }
+async function handleCheckExists(photoId) {
+  console.log(`Checking if photo ${photoId} exists in DynamoDB...`);
+  const existingItem = await getDynamoDBItem(photoId); const exists = !!existingItem; console.log(`Photo ${photoId} exists: ${exists}`); return exists;
+}
+async function handleDownloadAndStore(photoData) {
+  const photoId = photoData.id; console.log(`Processing download & store for photo ID: ${photoId}`); const category = determineCategory(photoData); console.log(`Determined category: ${category}`); const rawUrl = photoData.urls?.raw; if (!rawUrl) { throw new Error(`Missing raw URL for photo ${photoId}`); }
+  let extension = '.jpg'; try { const urlObj = new URL(rawUrl); const fmMatch = urlObj.searchParams.get('fm'); if (fmMatch && ['jpg', 'png', 'gif', 'webp'].includes(fmMatch.toLowerCase())) { extension = `.${fmMatch.toLowerCase()}`; } } catch (e) { console.warn(`Could not parse raw URL extension for ${photoId}, defaulting to .jpg. Error: ${e.message}`); }
+  const imageFileName = `<span class="math-inline">\{photoId\}</span>{extension}`; const r2ObjectKey = `<span class="math-inline">\{category\}/</span>{imageFileName}`; const r2PublicUrl = `<span class="math-inline">\{config\.r2PublicUrlPrefix\}/</span>{r2ObjectKey}`; console.log(`Downloading RAW image from: ${rawUrl}`); const imageResponse = await fetch(rawUrl); if (!imageResponse.ok) { throw new Error(`Failed to download RAW image <span class="math-inline">\{photoId\} \(</span>{imageResponse.status})`); } if (!imageResponse.body) { throw new Error(`No response body received for image ${photoId}`); }
+  const imageBuffer = Buffer.from(await imageResponse.arrayBuffer()); const contentType = imageResponse.headers.get('content-type') || `image/${extension.substring(1)}`; const fileSizeInBytes = imageBuffer.length; console.log(`RAW image downloaded. Size: ${Math.round(fileSizeInBytes / 1024)} KB, Type: ${contentType}`);
+  await uploadImage(r2ObjectKey, imageBuffer, contentType);
+  const metadataItem = { ...photoData, photo_id: photoId, r2_object_key: r2ObjectKey, r2_public_url: r2PublicUrl, sync_timestamp: new Date().toISOString(), image_category: category, downloaded_size: 'raw', r2_object_size_bytes: fileSizeInBytes }; await saveMetadata(metadataItem); return { photo_id: photoId, r2_object_key: r2ObjectKey, size: fileSizeInBytes };
+}
