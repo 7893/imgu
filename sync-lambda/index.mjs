@@ -97,16 +97,16 @@ export const handler = async (event) => {
     }
   } catch (error) {
     const pageInfo = currentPage !== undefined ? ` (Page ${currentPage})` : '';
-    console.error(`Error executing action <span class="math-inline">\{action\}</span>{pageInfo}:`, error);
-    error.message = `Action <span class="math-inline">\{action\} failed</span>{pageInfo}: ${error.message}`;
+    console.error(`Error executing action ${action}${pageInfo}:`, error);
+    error.message = `Action ${action} failed${pageInfo}: ${error.message}`;
     throw error;
   }
 };
 
 async function handleFetchPage(page, perPage, unsplashApiKey) {
   if (!unsplashApiKey) { throw new Error("Unsplash API Key is missing."); }
-  console.log(`Workspaceing Unsplash page <span class="math-inline">\{page\}, perPage\=</span>{perPage}, orderBy=latest`);
-  const unsplashApiUrl = `<span class="math-inline">\{config\.unsplashApiUrl\}/photos?page\=</span>{page}&per_page=${perPage}&order_by=latest`;
+  console.log(`Workspaceing Unsplash page ${page}, perPage=${perPage}, orderBy=latest`);
+  const unsplashApiUrl = `${config.unsplashApiUrl}/photos?page=${page}&per_page=${perPage}&order_by=latest`;
   const response = await fetch(unsplashApiUrl, {
       headers: { 'Authorization': `Client-ID ${unsplashApiKey}`, 'Accept-Version': 'v1' }
   });
@@ -128,7 +128,7 @@ async function handleCheckExists(photoId) {
 async function handleDownloadAndStore(photoData) {
   const photoId = photoData.id; console.log(`Processing download & store for photo ID: ${photoId}`); const category = determineCategory(photoData); console.log(`Determined category: ${category}`); const rawUrl = photoData.urls?.raw; if (!rawUrl) { throw new Error(`Missing raw URL for photo ${photoId}`); }
   let extension = '.jpg'; try { const urlObj = new URL(rawUrl); const fmMatch = urlObj.searchParams.get('fm'); if (fmMatch && ['jpg', 'png', 'gif', 'webp'].includes(fmMatch.toLowerCase())) { extension = `.${fmMatch.toLowerCase()}`; } } catch (e) { console.warn(`Could not parse raw URL extension for ${photoId}, defaulting to .jpg. Error: ${e.message}`); }
-  const imageFileName = `<span class="math-inline">\{photoId\}</span>{extension}`; const r2ObjectKey = `<span class="math-inline">\{category\}/</span>{imageFileName}`; const r2PublicUrl = `<span class="math-inline">\{config\.r2PublicUrlPrefix\}/</span>{r2ObjectKey}`; console.log(`Downloading RAW image from: ${rawUrl}`); const imageResponse = await fetch(rawUrl); if (!imageResponse.ok) { throw new Error(`Failed to download RAW image <span class="math-inline">\{photoId\} \(</span>{imageResponse.status})`); } if (!imageResponse.body) { throw new Error(`No response body received for image ${photoId}`); }
+  const imageFileName = `${photoId}${extension}`; const r2ObjectKey = `${category}/${imageFileName}`; const r2PublicUrl = `${config.r2PublicUrlPrefix}/${r2ObjectKey}`; console.log(`Downloading RAW image from: ${rawUrl}`); const imageResponse = await fetch(rawUrl); if (!imageResponse.ok) { throw new Error(`Failed to download RAW image ${photoId} (${imageResponse.status})`); } if (!imageResponse.body) { throw new Error(`No response body received for image ${photoId}`); }
   const imageBuffer = Buffer.from(await imageResponse.arrayBuffer()); const contentType = imageResponse.headers.get('content-type') || `image/${extension.substring(1)}`; const fileSizeInBytes = imageBuffer.length; console.log(`RAW image downloaded. Size: ${Math.round(fileSizeInBytes / 1024)} KB, Type: ${contentType}`);
   await uploadImage(r2ObjectKey, imageBuffer, contentType);
   const metadataItem = { ...photoData, photo_id: photoId, r2_object_key: r2ObjectKey, r2_public_url: r2PublicUrl, sync_timestamp: new Date().toISOString(), image_category: category, downloaded_size: 'raw', r2_object_size_bytes: fileSizeInBytes }; await saveMetadata(metadataItem); return { photo_id: photoId, r2_object_key: r2ObjectKey, size: fileSizeInBytes };
