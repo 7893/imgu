@@ -1,6 +1,5 @@
-// /home/admin/imgu/sync-lambda/dynamodb.mjs (Updated for Sync State Write)
+// /home/admin/imgu/sync-lambda/dynamodb.mjs (Updated to handle more sync state attributes)
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-// 添加 UpdateCommand
 import { DynamoDBDocumentClient, PutCommand, GetCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import config from './config.mjs';
 import process from 'node:process';
@@ -11,11 +10,7 @@ const unmarshallOptions = {};
 const translateConfig = { marshallOptions, unmarshallOptions };
 const ddbDocClient = DynamoDBDocumentClient.from(ddbClient, translateConfig);
 
-/**
- * 保存图片元数据到 DynamoDB (保持不变)
- * @param {Object} itemData
- * @returns {Promise<void>}
- */
+// saveMetadata 函数保持不变
 async function saveMetadata(itemData) {
   const photoId = itemData.photo_id;
   console.log(`Saving metadata to DynamoDB: Table=${config.dynamoDbTableName}, PhotoID=${photoId}`);
@@ -30,11 +25,7 @@ async function saveMetadata(itemData) {
   }
 }
 
-/**
- * 从 DynamoDB 获取单个图片项目 (保持不变)
- * @param {string} photoId
- * @returns {Promise<Object|undefined>}
- */
+// getDynamoDBItem 函数保持不变
 async function getDynamoDBItem(photoId) {
   console.log(`Getting item from DynamoDB: Table=${config.dynamoDbTableName}, PhotoID=${photoId}`);
   const getParams = { TableName: config.dynamoDbTableName, Key: { photo_id: photoId } };
@@ -50,44 +41,86 @@ async function getDynamoDBItem(photoId) {
 }
 
 /**
- * 更新 sync_control 表中的同步状态
+ * 更新 sync_control 表中的同步状态 (支持 currentSyncPage 和 apiLimits)
  * @param {string} syncType - 同步类型标识符 (主键)
- * @param {number} processedPage - 已成功处理的页码
+ * @param {object} attributesToUpdate - 包含要更新的属性的对象, e.g., { currentSyncPage: 5, apiLimits: { unsplashLimit: 50, unsplashRemaining: 45, lastCheckedTimestamp: '...' } }
+ * 如果属性值为 null，则会尝试移除该属性。
  * @returns {Promise<void>}
  */
-async function updateSyncState(syncType, processedPage) {
+async function updateSyncState(syncType, attributesToUpdate) {
     if (!config.dynamoDbSyncControlTableName) {
         console.error("Sync control table name not configured.");
-        // 不抛出错误，但记录，因为这可能是次要任务
         return;
     }
-    // 校验页码是否为有效数字
-    if (typeof processedPage !== 'number' || !Number.isInteger(processedPage) || processedPage < 0) {
-        console.warn(`Invalid processedPage number received: ${processedPage}. Skipping state update.`);
+    if (!attributesToUpdate || Object.keys(attributesToUpdate).length === 0) {
+        console.log("No attributes provided to update sync state.");
         return;
     }
-    console.log(`Updating sync state for type: ${syncType} to page: ${processedPage} in table: ${config.dynamoDbSyncControlTableName}`);
+
+    console.log(`Updating sync state for type: ${syncType} with attributes:`, attributesToUpdate);
+
+    let updateExpression = 'SET #uts = :uts'; // Always update lastSyncTimestamp
+    const removeExpressions = [];
+    const expressionAttributeNames = { '#uts': 'lastSyncTimestamp' }; // Changed from API's lastUpdatedTimestamp
+    const expressionAttributeValues = { ':uts': new Date().toISOString() };
+    let nameIndex = 0;
+    let valueIndex = 0;
+
+    // Helper function to add attribute names/values safely
+    const addExpressionAttribute = (key, value) => {
+        const namePlaceholder = `#n${nameIndex}`;
+        expressionAttributeNames[namePlaceholder] = key;
+        nameIndex++;
+        if (value !== null && value !== undefined) {
+            const valuePlaceholder = `:v${valueIndex}`;
+            expressionAttributeValues[valuePlaceholder] = value;
+            valueIndex++;
+            return { name: namePlaceholder, value: valuePlaceholder };
+        } else {
+            // Mark for removal
+            removeExpressions.push(namePlaceholder);
+            return { name: namePlaceholder, value: null };
+        }
+    };
+
+    for (const key in attributesToUpdate) {
+        if (attributesToUpdate.hasOwnProperty(key)) {
+            const value = attributesToUpdate[key];
+            const attrInfo = addExpressionAttribute(key, value);
+
+            if (attrInfo.value !== null) {
+                 updateExpression += `, ${attrInfo.name} = ${attrInfo.value}`;
+            }
+            // REMOVE expression handled later
+        }
+    }
+
+    if (removeExpressions.length > 0) {
+        updateExpression += ' REMOVE ' + removeExpressions.join(', ');
+    }
 
     const updateParams = {
         TableName: config.dynamoDbSyncControlTableName,
-        Key: { syncType: syncType }, // 使用 'syncType' 作为 Key
-        // 使用 SET 更新或创建属性
-        UpdateExpression: "SET lastProcessedPage = :page, lastSyncTimestamp = :ts",
-        ExpressionAttributeValues: {
-            ":page": processedPage,
-            ":ts": new Date().toISOString(),
-        },
-        // ReturnValues: "UPDATED_NEW", // 可以移除或保留用于调试
+        Key: { syncType: syncType },
+        UpdateExpression: updateExpression,
+        ExpressionAttributeNames: expressionAttributeNames,
+        ExpressionAttributeValues: Object.keys(expressionAttributeValues).length > 0 ? expressionAttributeValues : undefined,
+        // ReturnValues: "UPDATED_NEW", // Can be useful for debugging
     };
+
+    if (Object.keys(expressionAttributeValues).length === 0) {
+       delete updateParams.ExpressionAttributeValues;
+    }
+
+    console.log("UpdateSyncState parameters:", JSON.stringify(updateParams, null, 2));
 
     try {
         const command = new UpdateCommand(updateParams);
-        const result = await ddbDocClient.send(command);
-        console.log(`Successfully updated sync state for ${syncType} to page ${processedPage}.`);
+        await ddbDocClient.send(command);
+        console.log(`Successfully updated sync state for ${syncType}.`);
     } catch (error) {
-        console.error(`Error updating sync state for ${syncType} to page ${processedPage}:`, error);
-        // 记录错误，但通常不应让它中断 Step Function 的主流程
-        // 可以根据需要添加更复杂的错误处理，例如重试或告警
+        console.error(`Error updating sync state for ${syncType}:`, error);
+        // Log error but don't throw to prevent SFN failure just for state update
     }
 }
 
