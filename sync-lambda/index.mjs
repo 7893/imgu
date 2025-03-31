@@ -1,8 +1,8 @@
-// /home/admin/imgu/sync-lambda/index.mjs (Correct version using SSM Secrets)
+// /home/admin/imgu/sync-lambda/index.mjs (Updated: Simplify UPDATE_SYNC_STATE action)
 import config from './config.mjs';
 import { uploadImage } from './r2.mjs';
 import { getDynamoDBItem, saveMetadata, updateSyncState } from './dynamodb.mjs';
-import { getSecrets } from './secrets.mjs'; // 导入获取密钥的函数
+import { getSecrets } from './secrets.mjs';
 import process from 'node:process';
 
 function sanitizeFolderName(name) {
@@ -20,76 +20,121 @@ export const handler = async (event) => {
 
   let secrets;
    try {
-       secrets = await getSecrets(); // 在 handler 开始时加载密钥
+       secrets = await getSecrets();
    } catch (error) {
        console.error("CRITICAL: Failed to load secrets.", error);
        throw new Error(`Failed to load secrets: ${error.message}`);
    }
 
   const action = event.action;
+  // SFN 'Parameters' field content goes into event (if Payload is used) or becomes event itself
+  // Let's assume payload comes from SFN Parameters.Payload structure
   const payload = event.payload || {};
-  const currentPage = event.iteratorConfig?.CurrentPage ?? event?.iterator?.currentPage ?? payload?.processedPage;
-  const apiLimitsFromState = event.apiLimits;
+  // Try to get context info passed directly or via iterator for logging
+  const currentPage = event.iteratorConfig?.CurrentPage ?? event?.iterator?.currentPage ?? payload?.processedPage ?? event?.input?.iterator?.currentPage;
+  const apiLimitsFromState = event.apiLimits ?? event?.input?.fetchOutput?.Payload?.apiLimits; // More robust path checking
 
   try {
     switch (action) {
-      case 'FETCH_UNSPLASH_PAGE':
+      case 'FETCH_UNSPLASH_PAGE': {
         if (event.iteratorConfig?.CurrentPage === undefined || event.iteratorConfig?.BatchSize === undefined) {
             throw new Error('Missing iteratorConfig.CurrentPage or iteratorConfig.BatchSize for FETCH_UNSPLASH_PAGE');
         }
         const { photos, apiLimits: fetchedApiLimits } = await handleFetchPage(
             event.iteratorConfig.CurrentPage,
             event.iteratorConfig.BatchSize,
-            secrets.unsplashApiKey // 使用从 SSM 获取的 Key
+            secrets.unsplashApiKey
         );
+        // ASL ResultPath: $.fetchOutput will wrap this in Payload
         return { photos: photos, apiLimits: fetchedApiLimits };
+       }
 
-      case 'CHECK_PHOTO_EXISTS':
+      case 'CHECK_PHOTO_EXISTS': {
+        // ASL passes Map item directly as event if InputPath is used correctly
         if (!event.id) { throw new Error('Missing photo id (event.id) for CHECK_PHOTO_EXISTS'); }
         const exists = await handleCheckExists(event.id);
+        // ASL ResultPath: $.existsResult will wrap this in Payload
         return { exists: exists };
+       }
 
-      case 'DOWNLOAD_AND_STORE':
+      case 'DOWNLOAD_AND_STORE': {
+         // ASL passes { action: ..., payload: { photoData: $ } }
          if (!payload.photoData || !payload.photoData.id) { throw new Error('Missing payload.photoData for DOWNLOAD_AND_STORE'); }
          const result = await handleDownloadAndStore(payload.photoData);
+         // ASL ResultPath: $.downloadResult will wrap this in Payload
          return { success: true, ...result };
-
-      case 'UPDATE_SYNC_STATE':
-        if (!payload.syncType || payload.processedPage === undefined) { throw new Error('Missing syncType or processedPage in payload for UPDATE_SYNC_STATE'); }
-        const pageNum = parseInt(payload.processedPage, 10);
-        if (isNaN(pageNum)) { throw new Error(`Invalid processedPage in payload: ${payload.processedPage}`); }
-
-        const attributesToUpdate = { currentSyncPage: pageNum };
-        if (payload.apiLimits) {
-            attributesToUpdate.apiLimits = {
-                unsplashLimit: payload.apiLimits.limit !== undefined ? parseInt(payload.apiLimits.limit, 10) : null,
-                unsplashRemaining: payload.apiLimits.remaining !== undefined ? parseInt(payload.apiLimits.remaining, 10) : null,
-                lastCheckedTimestamp: new Date().toISOString()
-            };
-        } else if (apiLimitsFromState) {
-             attributesToUpdate.apiLimits = {
-                unsplashLimit: apiLimitsFromState.limit !== undefined ? parseInt(apiLimitsFromState.limit, 10) : null,
-                unsplashRemaining: apiLimitsFromState.remaining !== undefined ? parseInt(apiLimitsFromState.remaining, 10) : null,
-                lastCheckedTimestamp: new Date().toISOString()
-            };
         }
 
-        await updateSyncState(payload.syncType, attributesToUpdate);
-        return { success: true, message: `Sync state updated for ${payload.syncType} to page ${pageNum}` };
+      case 'UPDATE_SYNC_STATE': {
+        // ASL passes { action: ..., payload: { syncType: ..., apiLimits: ... } }
+        // We REMOVED processedPage from the ASL payload mapping
+        if (!payload.syncType) {
+             throw new Error('Missing syncType in payload for UPDATE_SYNC_STATE');
+        }
 
-      case 'FINALIZE_SYNC':
+        const attributesToUpdate = {};
+
+        // Get apiLimits passed from SFN (should be $.input.fetchOutput.Payload.apiLimits)
+        const limitsToUse = payload.apiLimits; // ASL now directly maps the correct path to payload.apiLimits
+
+        if (limitsToUse) {
+            attributesToUpdate.apiLimits = {
+                unsplashLimit: limitsToUse.limit !== undefined ? parseInt(limitsToUse.limit, 10) : null,
+                unsplashRemaining: limitsToUse.remaining !== undefined ? parseInt(limitsToUse.remaining, 10) : null,
+                lastCheckedTimestamp: new Date().toISOString()
+            };
+             // Also update currentSyncPage based on iterator info *available before this state*
+             // Note: SFN Input to this task was passed in error log in Response #149
+             // We extract currentPage from $.input.iterator.currentPage passed implicitly
+             const pageNum = event?.input?.iterator?.currentPage;
+             if (typeof pageNum === 'number') {
+                 attributesToUpdate.currentSyncPage = pageNum;
+                 console.log(`Recording currentSyncPage from SFN input: ${pageNum}`);
+             } else {
+                 console.warn("Could not reliably determine current page from SFN input to record currentSyncPage.");
+             }
+
+        } else {
+             console.log("No API limits found in payload to update.");
+             // Still record current page if possible? Maybe not, only record page when limits are updated.
+             const pageNum = event?.input?.iterator?.currentPage;
+             if (typeof pageNum === 'number') {
+                 attributesToUpdate.currentSyncPage = pageNum;
+                 console.log(`Recording currentSyncPage from SFN input: ${pageNum} (no API limits updated)`);
+             } else {
+                 console.warn("Could not reliably determine current page from SFN input to record currentSyncPage.");
+             }
+        }
+
+        // Only call DB update if we have something to update (apiLimits or potentially pageNum)
+        if (Object.keys(attributesToUpdate).length > 0) {
+            await updateSyncState(payload.syncType, attributesToUpdate);
+            return { success: true, message: `Sync state attributes updated for ${payload.syncType}.` };
+        } else {
+             return { success: true, message: `No attributes to update for ${payload.syncType}.` };
+        }
+      }
+
+      case 'FINALIZE_SYNC': {
          if (!payload.syncType || !payload.status) { throw new Error('Missing syncType or status in payload for FINALIZE_SYNC'); }
          console.log(`Finalizing sync for ${payload.syncType} with status ${payload.status}`);
          const finalAttributes = {
-             currentSyncPage: null,
+             currentSyncPage: null, // Clear current page
              lastRunStats: {
+                 // startTime: payload.startTime // Optional
                  endTime: new Date().toISOString(),
                  status: payload.status,
                  errorInfo: payload.errorInfo || null
+                 // fileCount: payload.fileCount // Optional
+                 // totalSize: payload.totalSize // Optional
              }
          };
+         // Also clear apiLimits maybe? Or keep last known? Keep last known for now.
+         // finalAttributes.apiLimits = null; // Uncomment to clear
+
          await updateSyncState(payload.syncType, finalAttributes);
          return { success: true, message: `Sync finalized for ${payload.syncType} with status ${payload.status}` };
+       }
 
       default:
         console.error('Unknown action requested:', action);
@@ -107,9 +152,7 @@ async function handleFetchPage(page, perPage, unsplashApiKey) {
   if (!unsplashApiKey) { throw new Error("Unsplash API Key is missing."); }
   console.log(`Workspaceing Unsplash page ${page}, perPage=${perPage}, orderBy=latest`);
   const unsplashApiUrl = `${config.unsplashApiUrl}/photos?page=${page}&per_page=${perPage}&order_by=latest`;
-  const response = await fetch(unsplashApiUrl, {
-      headers: { 'Authorization': `Client-ID ${unsplashApiKey}`, 'Accept-Version': 'v1' }
-  });
+  const response = await fetch(unsplashApiUrl, { headers: { 'Authorization': `Client-ID ${unsplashApiKey}`, 'Accept-Version': 'v1' } });
   const limitHeader = response.headers.get('x-ratelimit-limit');
   const remainingHeader = response.headers.get('x-ratelimit-remaining');
   const apiLimits = {
@@ -121,10 +164,12 @@ async function handleFetchPage(page, perPage, unsplashApiKey) {
   const photos = await response.json(); console.log(`Workspaceed ${photos.length} photos for page ${page}.`);
   return { photos, apiLimits };
 }
+
 async function handleCheckExists(photoId) {
   console.log(`Checking if photo ${photoId} exists in DynamoDB...`);
   const existingItem = await getDynamoDBItem(photoId); const exists = !!existingItem; console.log(`Photo ${photoId} exists: ${exists}`); return exists;
 }
+
 async function handleDownloadAndStore(photoData) {
   const photoId = photoData.id; console.log(`Processing download & store for photo ID: ${photoId}`); const category = determineCategory(photoData); console.log(`Determined category: ${category}`); const rawUrl = photoData.urls?.raw; if (!rawUrl) { throw new Error(`Missing raw URL for photo ${photoId}`); }
   let extension = '.jpg'; try { const urlObj = new URL(rawUrl); const fmMatch = urlObj.searchParams.get('fm'); if (fmMatch && ['jpg', 'png', 'gif', 'webp'].includes(fmMatch.toLowerCase())) { extension = `.${fmMatch.toLowerCase()}`; } } catch (e) { console.warn(`Could not parse raw URL extension for ${photoId}, defaulting to .jpg. Error: ${e.message}`); }
